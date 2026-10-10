@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Photobooth</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #2a2d31; }
+
+  /* Stage keeps the reference's 1205:683 proportions and covers the viewport. */
+  #stage {
+    position: absolute; left: 50%; top: 50%;
+    width: max(100vw, calc(100vh * 1205 / 683));
+    aspect-ratio: 1205 / 683;
+    transform: translate(-50%, -50%);
+    background: url("assets/background.jpg") center / cover no-repeat;
+  }
+  #doily {
+    position: absolute; left: 14.52%; top: 9.08%; width: 70.95%;
+    display: block; pointer-events: none;
+  }
+  /* The dark red oval from the reference = live camera area. */
+  #oval {
+    position: absolute; left: 21.58%; top: 18.89%; width: 56.85%; height: 62.08%;
+    border-radius: 50%; overflow: hidden; background: #2d0000;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #video {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; transform: scaleX(-1); /* mirror preview only */
+  }
+  #msg {
+    position: relative; z-index: 2; margin: 0; padding: 0 10%; text-align: center;
+    font: italic 600 clamp(16px, 3.2vw, 44px)/1.25 Georgia, "Times New Roman", serif;
+    color: #fff6e6; text-shadow: 0 2px 8px rgba(0, 0, 0, .6);
+  }
+  #oval.cover::after { content: ""; position: absolute; inset: 0; background: rgba(45, 0, 0, .55); }
+  #oval.error { cursor: pointer; }
+
+  /* Small camera control, fixed bottom-right. */
+  #shutter {
+    position: fixed; right: 12px; bottom: 14px; z-index: 5;
+    width: 44px; height: 40px; padding: 0; cursor: pointer;
+    background: #a70000; border: 2px solid #7d0000; border-radius: 8px;
+    display: grid; place-items: center;
+  }
+  #shutter:disabled { opacity: .5; cursor: default; }
+  #shutter svg { width: 26px; height: 26px; fill: none; stroke: #ff9a9a; stroke-width: 1.8; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <img id="doily" src="assets/doily.png" alt="">
+  <div id="oval">
+    <video id="video" autoplay playsinline muted></video>
+    <p id="msg" hidden></p>
+  </div>
+</div>
+
+<button id="shutter" type="button" aria-label="Take photo" disabled>
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M3 8a2 2 0 0 1 2-2h2.5l1.5-2h6l1.5 2H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+    <circle cx="12" cy="13" r="3.8"/>
+  </svg>
+</button>
+
+<canvas id="canvas" hidden></canvas>
+
+<script>
+(() => {
+  const oval = document.getElementById("oval");
+  const video = document.getElementById("video");
+  const msg = document.getElementById("msg");
+  const shutter = document.getElementById("shutter");
+  const canvas = document.getElementById("canvas");
+  let stream = null;
+
+  function showMessage(text, cls) {
+    msg.textContent = text;
+    msg.hidden = false;
+    oval.className = cls || "";
+  }
+  function hideMessage() { msg.hidden = true; oval.className = ""; }
+
+  async function startCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showMessage(window.isSecureContext
+        ? "Camera not supported on this device."
+        : "Camera needs https:// or localhost.", "error");
+      return;
+    }
+    try {
+      showMessage("Starting camera…");
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      hideMessage();
+      shutter.disabled = false;
+    } catch (err) {
+      const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
+      const none = err && (err.name === "NotFoundError" || err.name === "OverconstrainedError");
+      showMessage(denied ? "Camera access was blocked. Allow it in your browser, then tap here to retry."
+        : none ? "No camera found on this device."
+        : "Couldn't start the camera. Tap here to retry.", "error");
+    }
+  }
+
+  function capture() {
+    if (!video.videoWidth) return;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0); // un-mirrored original
+    shutter.disabled = true;
+    canvas.toBlob(blob => {
+      if (blob) {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "photobooth-" + new Date().toISOString().replace(/[:.]/g, "-") + ".jpg";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      }
+    }, "image/jpeg", 0.92);
+
+    showMessage("Your art is now in development!", "cover");
+    setTimeout(() => { hideMessage(); shutter.disabled = false; }, 2800);
+  }
+
+  shutter.addEventListener("click", capture);
+  oval.addEventListener("click", () => { if (oval.classList.contains("error")) startCamera(); });
+  startCamera();
+})();
+</script>
+</body>
+</html>

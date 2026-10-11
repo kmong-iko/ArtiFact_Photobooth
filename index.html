@@ -63,6 +63,10 @@
     position: absolute; inset: 0; width: 100%; height: 100%;
     object-fit: cover; transform: scaleX(-1); /* mirror preview only */
   }
+  #oval { isolation: isolate; }
+  #grain, #crt { position: absolute; inset: 0; z-index: 1; pointer-events: none; } /* CRT overlays: styled from LOOK in the script */
+  #grain { mix-blend-mode: overlay; }
+  #tint { position: absolute; inset: 0; z-index: 1; pointer-events: none; } /* warm gradient, colours set from LOOK in the script */
   #msg {
     position: relative; z-index: 2; margin: 0; padding: 0 10%; text-align: center;
     font: italic 600 calc(var(--w) * 0.03)/1.25 Georgia, "Times New Roman", serif;
@@ -91,6 +95,9 @@
 
   <div id="oval">
     <video id="video" autoplay playsinline muted></video>
+    <div id="tint"></div>
+    <div id="grain"></div>
+    <div id="crt"></div>
     <p id="msg" hidden></p>
   </div>
 
@@ -116,6 +123,19 @@
 
 <canvas id="canvas" hidden></canvas>
 
+<!-- CRT colour separation (preview only; the saved photo does the same in the canvas). Offsets are set from LOOK in the script. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <filter id="crtRgb" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+    <feColorMatrix in="SourceGraphic" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="r"/>
+    <feOffset id="crtR" in="r" dx="0" result="r2"/>
+    <feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="g"/>
+    <feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="b"/>
+    <feOffset id="crtB" in="b" dx="0" result="b2"/>
+    <feBlend in="r2" in2="g" mode="screen" result="rg"/>
+    <feBlend in="rg" in2="b2" mode="screen"/>
+  </filter>
+</svg>
+
 <script>
 (() => {
   const oval = document.getElementById("oval");
@@ -123,7 +143,135 @@
   const msg = document.getElementById("msg");
   const shutter = document.getElementById("shutter");
   const canvas = document.getElementById("canvas");
+  const tint = document.getElementById("tint");
   let stream = null, starting = false, retryTimer = null;
+
+  // ---- Photo look: edit these values; preview and saved photo both use them. ----
+  const LOOK = {
+    saturate: 1.32,   // colour richness   (1 = unchanged, 1.2 subtle, 1.4 strong)
+    brightness: 0.96, // exposure          (1 = unchanged, lower = darker/less washed out)
+    contrast: 1.14,   // punch             (1 = unchanged, 1.2 strong; too high crushes shadows)
+    sepia: 0.09,      // vintage warmth    (0 = none, keep under ~0.15 for natural skin)
+    tintTop: "rgba(255,170,125,0.16)",    // warm peach glow at the top of the frame (last number = strength)
+    tintBottom: "rgba(215,90,85,0.19)",   // soft rose-red at the bottom of the frame (last number = strength)
+    sharpen: 0.35,    // captured photo only: 0 = off, 0.2 subtle, 0.5 strong (higher can add halos/noise)
+    // --- Retro CRT (drawn into the saved photo as well as the preview) ---
+    scanline: 0.30,   // scanline opacity    (0 = off, 0.15 faint, 0.30 clear, 0.45 heavy)
+    scanLines: 100,   // lines top to bottom; fewer = wider spacing (survives phone downscaling)
+    scanThick: 0.5,   // dark share of each line period (0.3 thin, 0.5 even, 0.7 thick)
+    grain: 0.22,      // analog grain opacity (0 = off, 0.12 faint, 0.3 strong)
+    grainSize: 1.5,   // grain coarseness     (1 = fine, 2 = chunky; coarser reads better on phones)
+    rgbShift: 0.0032, // RGB separation as a fraction of image width (0 = off, 0.005 strong)
+    vignette: 0.50    // edge darkening       (0 = off, 0.3 light, 0.65 heavy)
+  };
+  const FILTER = `saturate(${LOOK.saturate}) brightness(${LOOK.brightness}) contrast(${LOOK.contrast}) sepia(${LOOK.sepia})`;
+  const crt = document.getElementById("crt"), grain = document.getElementById("grain");
+  video.style.filter = LOOK.rgbShift ? FILTER + " url(#crtRgb)" : FILTER;
+  tint.style.background = `linear-gradient(to bottom, ${LOOK.tintTop}, ${LOOK.tintBottom})`;
+
+  // Static grain tile, shared by the preview overlay and the saved photo (same texture, no flicker).
+  const grainTile = document.createElement("canvas");
+  grainTile.width = grainTile.height = 128;
+  { const g = grainTile.getContext("2d"), im = g.createImageData(128, 128);
+    for (let i = 0; i < im.data.length; i += 4) { const v = 128 + (Math.random() - 0.5) * 200; im.data[i] = im.data[i + 1] = im.data[i + 2] = v; im.data[i + 3] = 255; }
+    g.putImageData(im, 0, 0); }
+  grain.style.backgroundImage = `url(${grainTile.toDataURL()})`;
+  grain.style.backgroundSize = `${128 * LOOK.grainSize}px ${128 * LOOK.grainSize}px`;
+  grain.style.opacity = LOOK.grain;
+  // Scanlines (thin dark lines, top half of each row clear) + vignette, one layer.
+  crt.style.background =
+    `radial-gradient(ellipse closest-side at 50% 50%, rgba(0,0,0,0) 55%, rgba(0,0,0,${LOOK.vignette}) 100%) 0 0 / 100% 100% no-repeat, ` +
+    `linear-gradient(to bottom, rgba(0,0,0,0) ${(1 - LOOK.scanThick) * 100}%, rgba(0,0,0,${LOOK.scanline}) ${(1 - LOOK.scanThick) * 100}%) 0 0 / 100% var(--scan) repeat-y`;
+  // Keep line spacing and RGB offset proportional to the oval's size so the look scales with the screen.
+  const rOff = document.getElementById("crtR"), bOff = document.getElementById("crtB");
+  function layoutCRT() {
+    const dpr = window.devicePixelRatio || 1;
+    crt.style.setProperty("--scan", Math.max(2, Math.round(oval.clientHeight * dpr / LOOK.scanLines)) / dpr + "px");
+    const d = LOOK.rgbShift * oval.clientWidth;
+    rOff.setAttribute("dx", -d); bOff.setAttribute("dx", d);
+  }
+  new ResizeObserver(layoutCRT).observe(oval); window.addEventListener("resize", layoutCRT); layoutCRT();
+
+  // Light unsharp mask (3x3) on the saved photo; a small threshold keeps sensor noise from being amplified.
+  // Horizontal red/blue channel offset, same direction as the preview filter (in the image's own coordinates).
+  function rgbSplit(ctx, w, h, dx) {
+    if (dx < 1) return;
+    const img = ctx.getImageData(0, 0, w, h), src = img.data, out = new Uint8ClampedArray(src);
+    for (let y = 0; y < h; y++) {
+      const row = y * w * 4;
+      for (let x = 0; x < w; x++) {
+        const i = row + x * 4;
+        out[i] = src[row + Math.min(w - 1, x + dx) * 4];
+        out[i + 2] = src[row + Math.max(0, x - dx) * 4 + 2];
+      }
+    }
+    img.data.set(out); ctx.putImageData(img, 0, 0);
+  }
+
+  function sharpen(ctx, w, h, amount) {
+    if (!amount) return;
+    const img = ctx.getImageData(0, 0, w, h), src = img.data, out = new Uint8ClampedArray(src), row = w * 4;
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * row + x * 4;
+        for (let c = 0; c < 3; c++) {
+          const p = i + c;
+          const avg = (src[p - row - 4] + src[p - row] + src[p - row + 4] + src[p - 4] + src[p] + src[p + 4] +
+                       src[p + row - 4] + src[p + row] + src[p + row + 4]) / 9;
+          const diff = src[p] - avg;
+          if (diff > 3 || diff < -3) out[p] = src[p] + amount * diff;
+        }
+      }
+    }
+    img.data.set(out); ctx.putImageData(img, 0, 0);
+  }
+
+  // Same look on the captured frame: canvas filter, with a manual fallback for browsers without ctx.filter.
+  const cl = v => v < 0 ? 0 : v > 255 ? 255 : v;
+  function applyLook(ctx, w, h) {
+    if ("filter" in ctx) {
+      ctx.filter = FILTER; ctx.drawImage(video, 0, 0, w, h); ctx.filter = "none";
+    } else {
+      ctx.drawImage(video, 0, 0, w, h);
+      const img = ctx.getImageData(0, 0, w, h), d = img.data, c = LOOK.contrast, b = LOOK.brightness, sat = LOOK.saturate, k = 1 - LOOK.sepia;
+      for (let i = 0; i < d.length; i += 4) {
+        let r = d[i], g = d[i + 1], bl = d[i + 2];
+        const gray = 0.213 * r + 0.715 * g + 0.072 * bl;
+        // Clamp between stages, like CSS/canvas filters do, so out-of-range values don't skew later steps.
+        r = cl(gray + (r - gray) * sat); g = cl(gray + (g - gray) * sat); bl = cl(gray + (bl - gray) * sat);
+        r = cl(r * b); g = cl(g * b); bl = cl(bl * b);
+        r = cl((r - 127.5) * c + 127.5); g = cl((g - 127.5) * c + 127.5); bl = cl((bl - 127.5) * c + 127.5);
+        d[i]     = (0.393 + 0.607 * k) * r + (0.769 - 0.769 * k) * g + (0.189 - 0.189 * k) * bl;
+        d[i + 1] = (0.349 - 0.349 * k) * r + (0.686 + 0.314 * k) * g + (0.168 - 0.168 * k) * bl;
+        d[i + 2] = (0.272 - 0.272 * k) * r + (0.534 - 0.534 * k) * g + (0.131 + 0.869 * k) * bl;
+      }
+      ctx.putImageData(img, 0, 0);
+    }
+    // The preview crops the sides to fit the oval; size the CRT effects to that visible area so both match.
+    const visW = w * Math.min(1, (oval.clientWidth / oval.clientHeight) / (w / h));
+    rgbSplit(ctx, w, h, LOOK.rgbShift ? Math.max(1, Math.round(LOOK.rgbShift * visW)) : 0);
+    sharpen(ctx, w, h, LOOK.sharpen);
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, LOOK.tintTop); grad.addColorStop(1, LOOK.tintBottom);
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, w, h);
+    // CRT overlays, same order as the preview: grain, scanlines, vignette.
+    if (LOOK.grain) {
+      const k = visW / oval.clientWidth * LOOK.grainSize;
+      ctx.save(); ctx.globalCompositeOperation = "overlay"; ctx.globalAlpha = LOOK.grain; ctx.scale(k, k);
+      ctx.fillStyle = ctx.createPattern(grainTile, "repeat"); ctx.fillRect(0, 0, w / k, h / k); ctx.restore();
+    }
+    if (LOOK.scanline) {
+      const p = Math.max(2, Math.round(h / LOOK.scanLines)), t = Math.max(1, Math.round(p * LOOK.scanThick));
+      ctx.fillStyle = `rgba(0,0,0,${LOOK.scanline})`;
+      for (let y = p - t; y < h; y += p) ctx.fillRect(0, y, w, t); // whole pixels: even, crisp lines
+    }
+    if (LOOK.vignette) {
+      ctx.save(); ctx.translate(w / 2, h / 2); ctx.scale(visW, h);
+      const v = ctx.createRadialGradient(0, 0, 0, 0, 0, 0.5);
+      v.addColorStop(0.55, "rgba(0,0,0,0)"); v.addColorStop(1, `rgba(0,0,0,${LOOK.vignette})`);
+      ctx.fillStyle = v; ctx.fillRect(-w / (2 * visW), -0.5, w / visW, 1); ctx.restore();
+    }
+  }
 
   function showMessage(text, cls) { msg.textContent = text; msg.hidden = false; oval.className = cls || ""; }
   function hideMessage() { msg.hidden = true; oval.className = ""; }
@@ -172,7 +320,7 @@
     if (!video.videoWidth || shutter.disabled) return;
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    canvas.getContext("2d").drawImage(video, 0, 0); // un-mirrored original
+    applyLook(canvas.getContext("2d"), canvas.width, canvas.height); // un-mirrored, same look as preview
     shutter.disabled = true;
     canvas.toBlob(blob => {
       if (!blob) return;
@@ -181,7 +329,7 @@
       a.download = "photobooth-" + new Date().toISOString().replace(/[:.]/g, "-") + ".jpg";
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-    }, "image/jpeg", 0.92);
+    }, "image/jpeg", 0.95);
 
     showMessage("Pose captured—your masterpiece is in the making!", "cover");
     setTimeout(() => { hideMessage(); shutter.disabled = !stream; }, 3000);

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Photobooth</title>
 <style>
+  @font-face { font-family: "Homemade Apple"; src: url("assets/fonts/homemade-apple.woff2") format("woff2"); font-weight: 400; font-display: swap; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: #2d0000; }
 
   /* Stage keeps the Figma frame's proportions (982:550) and covers the viewport.
@@ -48,8 +49,8 @@
   #tape    { animation-name: sway;  animation-duration: 14s;   animation-delay: -6s; }
   @media (prefers-reduced-motion: reduce) { .decor img.fx { animation: none !important; } }
   #credit {
-    left: 33.6%; top: 3.6%; white-space: nowrap; color: #fff7ea;
-    font: 400 calc(var(--w) * 0.0235)/1.1 "Snell Roundhand", "Segoe Script", "Lucida Handwriting", "Brush Script MT", cursive;
+    left: 50.6%; top: 7.5%; transform: translateX(-50%); white-space: nowrap; color: #fff7ea;
+    font: 400 calc(var(--w) * 0.0145)/1.2 "Homemade Apple", "Segoe Script", "Brush Script MT", cursive;
     text-shadow: 0 1px 4px rgba(0, 0, 0, .55);
   }
 
